@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@keyframes blink-critical { 0%,100% { box-shadow: 0 0 0 1px rgba(239,68,68,.55); } 50% { box-shadow: 0 0 0 2px rgba(239,68,68,.85); } }
+.blink-critical { animation: blink-critical 2.4s ease-in-out infinite; }
+</style></head>
+<body>
+<div class="blink-critical" id="b">x</div>
+<pre id="out"></pre>
+<script>
+var b = document.getElementById('b');
+var cs = getComputedStyle(b);
+document.getElementById('out').textContent =
+  'REDUCED=' + matchMedia('(prefers-reduced-motion: reduce)').matches +
+  ' ANIM=' + cs.animationName +
+  ' DUR=' + cs.animationDuration +
+  ' ITER=' + cs.animationIterationCount;
+</script>
+</body></html>

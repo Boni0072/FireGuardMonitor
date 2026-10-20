@@ -1,0 +1,271 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --navy: #101828;
+  --blue: #2563eb;
+  --red: #dc2626;
+  --amber: #f59e0b;
+  --green: #16a34a;
+  --bg: #f5f7fb;
+}
+
+* {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background-color: var(--bg);
+  color: #1e293b;
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-xl border border-slate-200 shadow-sm;
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-md hover:border-slate-300;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800;
+  }
+  .btn-secondary {
+    @apply btn bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 active:bg-red-800;
+  }
+  .btn-ghost {
+    @apply btn text-slate-600 hover:bg-slate-100;
+  }
+  .input {
+    @apply w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all;
+  }
+  .label {
+    @apply block text-sm font-medium text-slate-700 mb-1.5;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); }
+  70% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+}
+.pulse-critical {
+  animation: pulse-ring 2s infinite;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
+}
+
+/* Pulsing halo for statuses that need attention.
+   Uses a smooth breathing glow (no harsh on/off) and respects reduced-motion. */
+@keyframes blink-critical {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.55), 0 0 10px rgba(239, 68, 68, 0.18); }
+  50%      { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.85), 0 0 22px rgba(239, 68, 68, 0.42); }
+}
+.blink-critical {
+  animation: blink-critical 2.4s ease-in-out infinite;
+}
+
+@keyframes blink-attention {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45), 0 0 8px rgba(245, 158, 11, 0.12); }
+  50%      { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.75), 0 0 18px rgba(245, 158, 11, 0.32); }
+}
+.blink-attention {
+  animation: blink-attention 3s ease-in-out infinite;
+}
+
+/* Painel de Monitoramento: pisca visivel dos cards vermelho (critico) e
+   amarelo (falha). Animacao dedicada de borda + fundo, mais forte que o
+   glow de blink-critical/blink-attention (que continua sendo usado nos
+   marcadores do mapa, banners e modais). */
+@keyframes card-blink-critical {
+  0%, 100% { border-color: rgba(239, 68, 68, 0.35); background-color: #121A2C; box-shadow: none; }
+  50%      { border-color: rgba(239, 68, 68, 1); background-color: rgba(153, 27, 27, 0.6); box-shadow: 0 0 18px rgba(239, 68, 68, 0.4); }
+}
+.card-blink-critical {
+  animation: card-blink-critical 1.4s ease-in-out infinite;
+}
+
+@keyframes card-blink-attention {
+  0%, 100% { border-color: rgba(245, 158, 11, 0.35); background-color: #121A2C; box-shadow: none; }
+  50%      { border-color: rgba(245, 158, 11, 1); background-color: rgba(146, 64, 14, 0.6); box-shadow: 0 0 18px rgba(245, 158, 11, 0.35); }
+}
+.card-blink-attention {
+  animation: card-blink-attention 1.8s ease-in-out infinite;
+}
+
+/* Acessibilidade: movimento reduzido nao remove o sinal de alarme — num
+   painel de monitoramento o piscar e essencial (WCAG 2.2.2/2.3.3, excecao de
+   conteudo critico). Com prefers-reduced-motion os cards trocam o piscar
+   rapido por uma pulsacao lenta e suave (borda + brilho); blink-critical /
+   blink-attention (marcadores, banners, modais) continuam estaticos. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes card-blink-critical-soft {
+    0%, 100% { border-color: rgba(239, 68, 68, 0.6); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    50%      { border-color: rgba(239, 68, 68, 1); box-shadow: 0 0 12px 2px rgba(239, 68, 68, 0.45); }
+  }
+  @keyframes card-blink-attention-soft {
+    0%, 100% { border-color: rgba(245, 158, 11, 0.55); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    50%      { border-color: rgba(245, 158, 11, 1); box-shadow: 0 0 10px 2px rgba(245, 158, 11, 0.4); }
+  }
+  .blink-critical,
+  .blink-attention,
+  .pulse-critical {
+    animation: none !important;
+    box-shadow: none !important;
+  }
+  .blink-critical { border-color: rgba(239, 68, 68, 0.85) !important; }
+  .blink-attention { border-color: rgba(245, 158, 11, 0.75) !important; }
+  /* Cards do Monitor: pulsacao lenta e suave no lugar do piscar rapido;
+     borda grossa reforca o destaque mesmo se a animacao for suprimida. */
+  .card-blink-critical {
+    border-width: 2px !important;
+    animation: card-blink-critical-soft 2.6s ease-in-out infinite;
+  }
+  .card-blink-attention {
+    border-width: 2px !important;
+    animation: card-blink-attention-soft 3s ease-in-out infinite;
+  }
+}
+
+/* Map markers (Leaflet divIcon) */
+.map-marker-wrap {
+  background: transparent !important;
+  border: none !important;
+}
+.map-marker {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 3px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  transition: box-shadow 0.2s ease;
+}
+/* Quando o marcador esta piscando, desliga a transicao de box-shadow
+   para nao bloquear as @keyframes de blink-critical / blink-attention. */
+.map-marker.blink-critical,
+.map-marker.blink-attention {
+  transition: none !important;
+}
+
+/* Pulsacao forte dos marcadores do mapa (halo em anel + batida do ponto).
+   Vermelho (alarme/sem comunicacao) = ciclo 1,2s; ambar (falha) = 1,8s.
+   Verde/azul nao recebem markerPulse, entao ficam estaticos. */
+.map-marker.marker-pulse-critical,
+.map-marker.marker-pulse-attention {
+  position: relative;
+  transition: none !important;
+}
+.map-marker.marker-pulse-critical::before,
+.map-marker.marker-pulse-critical::after,
+.map-marker.marker-pulse-attention::before,
+.map-marker.marker-pulse-attention::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--marker-color);
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes marker-ring {
+  0%   { transform: scale(1);   opacity: 0.85; }
+  100% { transform: scale(3.2); opacity: 0; }
+}
+@keyframes marker-dot-beat {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.18); }
+}
+.map-marker.marker-pulse-critical {
+  animation: marker-dot-beat 1.2s ease-in-out infinite;
+}
+.map-marker.marker-pulse-critical::before { animation: marker-ring 1.2s ease-out infinite; }
+.map-marker.marker-pulse-critical::after  { animation: marker-ring 1.2s ease-out 0.6s infinite; }
+.map-marker.marker-pulse-attention {
+  animation: marker-dot-beat 1.8s ease-in-out infinite;
+}
+.map-marker.marker-pulse-attention::before { animation: marker-ring 1.8s ease-out infinite; }
+.map-marker.marker-pulse-attention::after  { animation: marker-ring 1.8s ease-out 0.9s infinite; }
+
+/* Movimento reduzido: sem expansao nem escala, mas continua chamando
+   atenção com um fade lento do halo (bem abaixo de 3 piscadas por segundo). */
+@keyframes marker-ring-soft {
+  0%, 100% { opacity: 0.15; }
+  50%      { opacity: 0.55; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-marker.marker-pulse-critical,
+  .map-marker.marker-pulse-attention { animation: none; }
+  .map-marker.marker-pulse-critical::before,
+  .map-marker.marker-pulse-attention::before {
+    transform: scale(2);
+    animation: marker-ring-soft 2.4s ease-in-out infinite;
+  }
+  .map-marker.marker-pulse-critical::after,
+  .map-marker.marker-pulse-attention::after { display: none; }
+}
+
+/* Marcador com foto do edificio: avatar circular emoldurado pelo branco e
+   pelo anel de status (box-shadow com --marker-color). Os aneis de pulsacao
+   ficam ATRAS da foto (z-index do img) para o halo expandir por fora sem
+   tapar a imagem; o marcador cresce para 28px (iconSize/anchor calculados
+   junto no makeIcon). */
+.map-marker.map-marker-has-avatar {
+  width: 28px;
+  height: 28px;
+  background: #0e1526;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55), 0 0 0 2px var(--marker-color);
+}
+.map-marker.map-marker-has-avatar .marker-avatar {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.map-tooltip {
+  border-radius: 8px;
+  border: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  padding: 4px 8px;
+}
+.leaflet-container {
+  background: #0b1220;
+  font-family: inherit;
+}
