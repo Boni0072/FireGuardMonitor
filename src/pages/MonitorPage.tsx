@@ -606,9 +606,9 @@ export function MonitorPage() {
         </div>
 
         {/* Body: centers grid + right rail */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 px-5 py-4">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-4 px-5 py-4">
           {/* Centers */}
-          <div className="lg:col-span-2 min-w-0">
+          <div className="lg:col-span-4 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <h2 className="text-sm font-semibold text-white tracking-wide">
                 Centros de Incêndia <span className="text-slate-500 font-normal">({filtered.length})</span>
@@ -666,7 +666,7 @@ export function MonitorPage() {
                 <p className="text-slate-400">Nenhuma central encontrada com os filtros selecionados.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
                 {filtered.map((board) => {
                   const cfg = cardStyle(board);
                   const StatusIcon = statusConfig[board.status].icon;
