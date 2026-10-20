@@ -31,6 +31,9 @@ export function TenantsPage() {
     id: '', full_name: '', email: '', role: 'viewer' as UserRole, tenant_id: '', phone: '', status: 'active',
   });
 
+  const [formError, setFormError] = useState<string | null>(null);
+  const [userFormError, setUserFormError] = useState<string | null>(null);
+
   async function load() {
     setLoading(true);
     const { data: tData } = await db.from('tenants').select('*').order('name');
@@ -48,28 +51,46 @@ export function TenantsPage() {
   function openCreateTenant() {
     setEditing(null);
     setForm({ name: '', legal_name: '', document: '', plan: 'starter', status: 'active', contact_email: '', contact_phone: '', max_buildings: 10 });
+    setFormError(null);
     setModalOpen(true);
   }
 
   function openEditTenant(t: Tenant) {
     setEditing(t);
     setForm({ name: t.name, legal_name: t.legal_name ?? '', document: t.document ?? '', plan: t.plan, status: t.status, contact_email: t.contact_email ?? '', contact_phone: t.contact_phone ?? '', max_buildings: t.max_buildings });
+    setFormError(null);
     setModalOpen(true);
   }
 
   async function saveTenant() {
-    if (!form.name) return;
-    if (editing) {
-      await db.from('tenants').update(form).eq('id', editing.id);
-    } else {
-      await db.from('tenants').insert(form);
+    setFormError(null);
+    if (!form.name.trim()) {
+      setFormError('Informe o nome da empresa.');
+      return;
+    }
+    try {
+      if (editing) {
+        await db.from('tenants').update(form).eq('id', editing.id);
+      } else {
+        await db.from('tenants').insert(form);
+      }
+    } catch (err) {
+      console.error('[TENANTS] Erro ao salvar empresa:', err);
+      setFormError('Erro ao salvar empresa: ' + (err instanceof Error ? err.message : String(err)));
+      return;
     }
     setModalOpen(false);
     load();
   }
 
   async function removeTenant(t: Tenant) {
-    await db.from('tenants').delete().eq('id', t.id);
+    try {
+      await db.from('tenants').delete().eq('id', t.id);
+    } catch (err) {
+      console.error('[TENANTS] Erro ao excluir empresa:', err);
+      alert('Erro ao excluir empresa: ' + (err instanceof Error ? err.message : String(err)));
+      return;
+    }
     setConfirmDelete(null);
     load();
   }
@@ -77,13 +98,21 @@ export function TenantsPage() {
   function openEditUser(p: Profile) {
     setEditingUser(p);
     setUserForm({ id: p.id, full_name: p.full_name, email: p.email, role: p.role, tenant_id: p.tenant_id ?? '', phone: p.phone ?? '', status: p.status });
+    setUserFormError(null);
     setUserModalOpen(true);
   }
 
   async function saveUser() {
+    setUserFormError(null);
     if (!editingUser) return;
     const updates = { full_name: userForm.full_name, role: userForm.role, phone: userForm.phone, status: userForm.status, tenant_id: userForm.tenant_id || null };
-    await db.from('profiles').update(updates).eq('id', editingUser.id);
+    try {
+      await db.from('profiles').update(updates).eq('id', editingUser.id);
+    } catch (err) {
+      console.error('[TENANTS] Erro ao salvar usuário:', err);
+      setUserFormError('Erro ao salvar usuário: ' + (err instanceof Error ? err.message : String(err)));
+      return;
+    }
     if (editingUser.id === profile?.id) await refreshProfile();
     setUserModalOpen(false);
     load();
@@ -193,6 +222,11 @@ export function TenantsPage() {
         size="lg"
         footer={<><button className="btn-secondary" onClick={() => setModalOpen(false)}>Cancelar</button><button className="btn-primary" onClick={saveTenant}>Salvar</button></>}
       >
+        {formError && (
+          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 mb-4">
+            {formError}
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div><label className="label">Nome *</label><input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
           <div><label className="label">Razão social</label><input className="input" value={form.legal_name} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} /></div>
@@ -211,6 +245,11 @@ export function TenantsPage() {
         title="Editar Usuário"
         footer={<><button className="btn-secondary" onClick={() => setUserModalOpen(false)}>Cancelar</button><button className="btn-primary" onClick={saveUser}>Salvar</button></>}
       >
+        {userFormError && (
+          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+            {userFormError}
+          </div>
+        )}
         <div className="space-y-4">
           <div><label className="label">Nome</label><input className="input" value={userForm.full_name} onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })} /></div>
           <div><label className="label">E-mail</label><input className="input bg-slate-50" value={userForm.email} disabled /></div>

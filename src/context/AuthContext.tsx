@@ -6,9 +6,9 @@ import {
   signInWithEmailAndPassword,
   signOut as fbSignOut,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, firestore } from '@/lib/firebase';
-import { Profile } from '@/lib/db';
+import { Profile, isDemoAccount } from '@/lib/db';
 
 interface AuthContextValue {
   session: { user: User } | null;
@@ -28,16 +28,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadProfile = useCallback(async (uid: string) => {
+  const loadProfile = useCallback(async (uid: string): Promise<Profile | null> => {
     try {
       const snap = await getDoc(doc(firestore, 'profiles', uid));
       if (snap.exists()) {
-        setProfile({ id: snap.id, ...(snap.data() as Omit<Profile, 'id'>) });
-      } else {
-        setProfile(null);
+        const p = { id: snap.id, ...(snap.data() as Omit<Profile, 'id'>) };
+        setProfile(p);
+        return p;
       }
+      setProfile(null);
+      return null;
     } catch (err) {
       console.error('Profile load error:', err);
+      return null;
+    }
+  }, []);
+
+  // Auto-recuperação: contas de Auth sem documento em `profiles` (ex.: criadas
+  // antes desta correção ou via Console) ganham o documento automaticamente no
+  // login. O primeiro usuário real do projeto vira `platform_admin`, o que
+  // libera o botão "Nova Empresa" e quebra o impasse de bootstrap.
+  const ensureProfileFor = useCallback(async (u: User) => {
+    try {
+      const ref = doc(firestore, 'profiles', u.uid);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        setProfile({ id: snap.id, ...(snap.data() as Omit<Profile, 'id'>) });
+        return;
+      }
+      let existing = 0;
+      try {
+        existing = (await getDocs(collection(firestore, 'profiles'))).size;
+      } catch {
+        /* segue assumindo 0 */
+      }
+      const now = new Date().toISOString();
+      const profileData: Omit<Profile, 'id'> = {
+        tenant_id: null,
+        full_name: u.displayName ?? u.email?.split('@')[0] ?? 'Novo usuário',
+        email: u.email ?? '',
+        role: existing === 0 && !isDemoAccount(u.email) ? 'platform_admin' : 'viewer',
+        phone: null,
+        status: 'active',
+        last_login_at: now,
+        created_at: now,
+      };
+      await setDoc(ref, profileData);
+      setProfile({ id: u.uid, ...profileData });
+    } catch (err) {
+      console.error('Profile ensure error:', err);
     }
   }, []);
 
@@ -45,14 +84,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        loadProfile(u.uid).finally(() => setLoading(false));
+        (async () => {
+          const p = await loadProfile(u.uid);
+          if (!p) await ensureProfileFor(u);
+          setLoading(false);
+        })();
       } else {
         setProfile(null);
         setLoading(false);
       }
     });
     return () => unsub();
-  }, [loadProfile]);
+  }, [loadProfile, ensureProfileFor]);
 
   const signIn = async (email: string, password: string) => {
     try {
@@ -68,11 +111,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       const now = new Date().toISOString();
+      // Bootstrap: o primeiro usuário real do projeto vira admin da plataforma
+      // (necessário para liberar o botão "Nova Empresa").
+      let role: 'platform_admin' | 'viewer' = 'viewer';
+      try {
+        const all = await getDocs(collection(firestore, 'profiles'));
+        if (all.empty && !isDemoAccount(email)) role = 'platform_admin';
+      } catch {
+        /* mantém viewer */
+      }
       const docData: Omit<Profile, 'id'> = {
         tenant_id: null,
         full_name: fullName,
         email,
-        role: 'viewer',
+        role,
         phone: null,
         status: 'active',
         last_login_at: now,
