@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { db, Gateway, Building } from '@/lib/db';
 import { useUnifiedEvents } from '@/hooks/useUnifiedEvents';
@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/PageHeader';
 import {
   Building2, Radio, Wifi, WifiOff, Flame, AlertTriangle,
   Activity, Clock, TrendingUp, ShieldCheck, Users,
+  ChevronDown, ChevronRight, ChevronUp,
 } from 'lucide-react';
 import { EVENT_LABELS, eventTypeColor, eventLabelFor, formatTime, timeAgo } from '@/lib/eventHelpers';
 
@@ -31,7 +32,7 @@ export function DashboardPage() {
   const isPlatformAdmin = profile?.role === 'platform_admin';
 
   // Fonte unica de eventos (colecoes `events` + `eventos` legado).
-  const { events: unifiedEvents, loading: eventsLoading, error: eventsError } = useUnifiedEvents(500);
+  const { events: unifiedEvents, loading: eventsLoading, error: eventsError, reload } = useUnifiedEvents(500);
 
   useEffect(() => {
     async function load() {
@@ -67,6 +68,37 @@ export function DashboardPage() {
 
   // Estatisticas e lista de eventos recentes derivadas da MESMA fonte unificada.
   const recentEvents = useMemo(() => unifiedEvents.slice(0, 8), [unifiedEvents]);
+
+  // Building IDs únicos dos eventos recentes
+  const buildingIdsFromEvents = useMemo(() => {
+    const ids = new Set<string>();
+    recentEvents.forEach((evt) => {
+      if (evt.building_id) ids.add(evt.building_id);
+    });
+    return ids;
+  }, [recentEvents]);
+
+  // Edifícios da mesma conta que possuem eventos recentes
+  const buildingsWithEvents = useMemo(() => {
+    return buildings.filter((b) => buildingIdsFromEvents.has(b.id));
+  }, [buildings, buildingIdsFromEvents]);
+
+  // Estado de colapso por edifício (inicia todos recolhidos)
+  const [collapsedBuildings, setCollapsedBuildings] = useState<Set<string>>(new Set());
+  const userInteractedRef = useRef(false);
+
+  // Inicializa todos os edifícios como recolhidos quando os eventos chegam
+  useEffect(() => {
+    if (userInteractedRef.current) return; // usuário já interagiu, não sobrescrever
+    const allIds = new Set<string>();
+    recentEvents.forEach((e) => {
+      if (e.building_id) allIds.add(e.building_id);
+    });
+    const hasUnbound = recentEvents.some((e) => !e.building_id);
+    if (allIds.size === 0 && !hasUnbound) return; // ainda não há dados
+    if (hasUnbound) allIds.add('sem-edificio');
+    setCollapsedBuildings(allIds);
+  }, [recentEvents]);
 
   useEffect(() => {
     const dayStart24 = new Date(Date.now() - 86400000).toISOString();
@@ -196,11 +228,44 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent events */}
+      {/* Recent events - agrupado por edifício, cada um iniciando recolhido */}
       <div className="card overflow-hidden">
         <div className="flex items-center gap-2 px-5 py-4 border-b border-slate-100">
           <Activity className="w-5 h-5 text-blue-600" />
           <h3 className="font-semibold text-slate-900">Eventos recentes</h3>
+          <button
+            className="ml-auto text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1"
+            onClick={() => {
+              userInteractedRef.current = true;
+              const allIds = new Set<string>();
+              recentEvents.forEach((e) => {
+                if (e.building_id) allIds.add(e.building_id);
+              });
+              const hasUnbound = recentEvents.some((e) => !e.building_id);
+              if (hasUnbound) allIds.add('sem-edificio');
+              const allCollapsed = [...allIds].every((id) => collapsedBuildings.has(id));
+              if (allCollapsed) {
+                setCollapsedBuildings(new Set());
+              } else {
+                setCollapsedBuildings(allIds);
+              }
+            }}
+          >
+            {(() => {
+              const allIds = new Set<string>();
+              recentEvents.forEach((e) => {
+                if (e.building_id) allIds.add(e.building_id);
+              });
+              const hasUnbound = recentEvents.some((e) => !e.building_id);
+              if (hasUnbound) allIds.add('sem-edificio');
+              const allCollapsed = [...allIds].every((id) => collapsedBuildings.has(id));
+              return allCollapsed ? (
+                <span>Expande tudo <ChevronDown className="w-3 h-3 ml-1" /></span>
+              ) : (
+                <span>Recolhe tudo <ChevronUp className="w-3 h-3 ml-1" /></span>
+              );
+            })()}
+          </button>
         </div>
         <div className="divide-y divide-slate-100">
           {eventsError ? (
@@ -211,26 +276,94 @@ export function DashboardPage() {
             <div className="px-5 py-8 text-center text-sm text-slate-400">Carregando eventos...</div>
           ) : recentEvents.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm text-slate-400">Nenhum evento recebido ainda.</div>
-          ) : null}
-          {recentEvents.map((evt) => (
-            <div key={evt.id} className="px-5 py-3.5 flex items-center gap-4 hover:bg-slate-50 transition-colors">
-              <div className={`badge ${eventTypeColor(evt)}`}>
-                {eventLabelFor(evt, EVENT_LABELS[evt.event_type as keyof typeof EVENT_LABELS] ?? evt.event_type)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-slate-700 truncate">
-                  Entrada: {evt.input_ref || '—'} · Severidade: {evt.severity}
-                </div>
-              </div>
-              <div className="text-xs text-slate-400 shrink-0 hidden sm:block">{formatTime(evt.received_at)}</div>
-              <div className="text-xs text-slate-400 shrink-0">{timeAgo(evt.received_at)}</div>
-              {evt.acknowledged ? (
-                <span className="badge bg-green-100 text-green-700 border border-green-200">Reconhecido</span>
-              ) : (
-                <span className="badge bg-slate-100 text-slate-500 border border-slate-200">Pendente</span>
-              )}
-            </div>
-          ))}
+          ) : (
+            <>
+              {(() => {
+                const buildingMap = new Map<string, string>();
+                buildingsWithEvents.forEach((b) => buildingMap.set(b.id, b.name));
+
+                const grouped = new Map<string | null, typeof recentEvents>();
+                recentEvents.forEach((evt) => {
+                  const bid = evt.building_id ?? null;
+                  const arr = grouped.get(bid) ?? [];
+                  arr.push(evt);
+                  grouped.set(bid, arr);
+                });
+
+                const orderedGroups: Array<{ bid: string | null; name: string; events: typeof recentEvents }> = [];
+                grouped.forEach((evts, bid) => {
+                  orderedGroups.push({
+                    bid,
+                    name: bid ? (buildingMap.get(bid) ?? 'Edif�cio desconhecido') : 'Sem edif�cio',
+                    events: evts.slice(0, 8),
+                  });
+                });
+                orderedGroups.sort((a, b) => (a.bid === null ? 1 : b.bid === null ? -1 : 0));
+
+                return orderedGroups.map(({ bid, name, events: evts }) => {
+                  const groupId = bid ?? 'sem-edificio';
+                  const isCollapsed = collapsedBuildings.has(groupId);
+                  return (
+                    <div key={groupId} className="px-5 py-4">
+                      <div
+                        className="flex items-center gap-2 mb-2 cursor-pointer hover:bg-slate-50 rounded p-1"
+                        onClick={() =>
+                          setCollapsedBuildings((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(groupId)) next.delete(groupId);
+                            else next.add(groupId);
+                            return next;
+                          })
+                        }
+                      >
+                        <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex-1">
+                          {name}
+                        </span>
+                        {isCollapsed ? (
+                          <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
+                        ) : (
+                          <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
+                        )}
+                      </div>
+                      {!isCollapsed && (
+                        <div className="space-y-1">
+                          {evts.map((evt) => (
+                            <div key={evt.id} className="px-5 py-3 flex items-center gap-4 hover:bg-slate-50 transition-colors border-l-2 border-transparent hover:border-slate-200">
+                              <div className={`badge ${eventTypeColor(evt)}`}>
+                                {eventLabelFor(
+                                  evt,
+                                  EVENT_LABELS[evt.event_type as keyof typeof EVENT_LABELS] ?? evt.event_type
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm text-slate-700 truncate">
+                                  Entrada: {evt.input_ref || '�'} � Severidade: {evt.severity}
+                                </div>
+                              </div>
+                              <div className="text-xs text-slate-400 shrink-0 hidden sm:block">
+                                {formatTime(evt.received_at)}
+                              </div>
+                              <div className="text-xs text-slate-400 shrink-0">{timeAgo(evt.received_at)}</div>
+                              {evt.acknowledged ? (
+                                <span className="badge bg-green-100 text-green-700 border border-green-200 text-[10px]">
+                                  Reconhecido
+                                </span>
+                              ) : (
+                                <span className="badge bg-slate-100 text-slate-500 border border-slate-200 text-[10px]">
+                                  Pendente
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+            </>
+          )}
         </div>
       </div>
     </>

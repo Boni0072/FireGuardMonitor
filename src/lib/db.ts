@@ -259,20 +259,63 @@ export async function fetchUnifiedEvents(
     }
   };
 
-  const [modernDocs, legacyDocs, panelDocs] = await Promise.all([
+  const [modernDocs, legacyDocs, panelDocs, gatewayDocs] = await Promise.all([
     readCollection('events'),
     readCollection('eventos'),
     readCollection('panels'),
+    readCollection('gateways'),
   ]);
 
   // Tenant/building herdados do painel (eventos legados podem nao ter o vinculo).
   const panelInfo = new Map<string, { tenant_id: string | null; building_id: string | null }>();
+  // Mapeia asset_code do painel -> { tenant_id, building_id } para eventos legados que so trazem `conta`.
+  const panelByAssetCode = new Map<string, { tenant_id: string | null; building_id: string | null }>();
   for (const p of panelDocs) {
-    panelInfo.set(p.id, {
+    const info = {
       tenant_id: (p.data.tenant_id as string | null) ?? null,
       building_id: (p.data.building_id as string | null) ?? null,
+    };
+    panelInfo.set(p.id, info);
+    const asset = p.data.asset_code;
+    if (asset != null && asset !== '') {
+      panelByAssetCode.set(String(asset), info);
+    }
+  }
+
+  // Tenant/building herdados do gateway (eventos podem vincular via gateway_id).
+  const gatewayInfo = new Map<string, { tenant_id: string | null; building_id: string | null }>();
+  for (const g of gatewayDocs) {
+    gatewayInfo.set(g.id, {
+      tenant_id: (g.data.tenant_id as string | null) ?? null,
+      building_id: (g.data.building_id as string | null) ?? null,
     });
   }
+
+  /** Tenta preencher tenant_id e building_id do evento via panel, gateway ou conta (asset_code). */
+  const inheritLinks = (row: Row) => {
+    if (row.panel_id) {
+      const info = panelInfo.get(String(row.panel_id));
+      if (info) {
+        if (!row.tenant_id) row.tenant_id = info.tenant_id;
+        if (!row.building_id) row.building_id = info.building_id;
+      }
+    }
+    if ((!row.tenant_id || !row.building_id) && row.gateway_id) {
+      const info = gatewayInfo.get(String(row.gateway_id));
+      if (info) {
+        if (!row.tenant_id) row.tenant_id = info.tenant_id;
+        if (!row.building_id) row.building_id = info.building_id;
+      }
+    }
+    // Fallback: eventos legados so trazem `conta` (asset_code do painel).
+    if ((!row.tenant_id || !row.building_id) && row.conta) {
+      const info = panelByAssetCode.get(String(row.conta));
+      if (info) {
+        if (!row.tenant_id) row.tenant_id = info.tenant_id;
+        if (!row.building_id) row.building_id = info.building_id;
+      }
+    }
+  };
 
   const rows: Row[] = [];
 
@@ -280,14 +323,7 @@ export async function fetchUnifiedEvents(
   for (const d of modernDocs) {
     try {
       const row = normalizeEventDoc(d.id, d.data);
-      // Herda tenant/building do painel quando o documento nao os traz.
-      if (row.panel_id) {
-        const info = panelInfo.get(String(row.panel_id));
-        if (info) {
-          if (!row.tenant_id) row.tenant_id = info.tenant_id;
-          if (!row.building_id) row.building_id = info.building_id;
-        }
-      }
+      inheritLinks(row);
       row.__source = 'events';
       rows.push(row);
     } catch { /* ignora documento invalido */ }
@@ -297,13 +333,7 @@ export async function fetchUnifiedEvents(
   for (const d of legacyDocs) {
     try {
       const leg = normalizeLegacyEvento(d.id, d.data);
-      if (!leg.tenant_id && leg.panel_id) {
-        const info = panelInfo.get(String(leg.panel_id));
-        if (info) {
-          leg.tenant_id = info.tenant_id;
-          if (!leg.building_id) leg.building_id = info.building_id;
-        }
-      }
+      inheritLinks(leg);
       leg.__source = 'eventos';
       rows.push(leg);
     } catch { /* ignora documento invalido */ }
