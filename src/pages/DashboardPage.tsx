@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { db, Gateway, EventRow, Building } from '@/lib/db';
+import { db, Gateway, Building } from '@/lib/db';
+import { useUnifiedEvents } from '@/hooks/useUnifiedEvents';
 import { PageHeader } from '@/components/PageHeader';
 import {
   Building2, Radio, Wifi, WifiOff, Flame, AlertTriangle,
@@ -23,78 +24,77 @@ interface Stats {
 export function DashboardPage() {
   const { profile } = useAuth();
   const [stats, setStats] = useState<Stats | null>(null);
-  const [recentEvents, setRecentEvents] = useState<EventRow[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [eventsByDay, setEventsByDay] = useState<{ date: string; count: number }[]>([]);
   const [loading, setLoading] = useState(true);
 
   const isPlatformAdmin = profile?.role === 'platform_admin';
 
+  // Fonte unica de eventos (colecoes `events` + `eventos` legado).
+  const { events: unifiedEvents, loading: eventsLoading, error: eventsError } = useUnifiedEvents(500);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
       const tenantFilter: Record<string, string> = isPlatformAdmin || !profile?.tenant_id ? {} : { tenant_id: profile.tenant_id };
 
-      const [tenantRes, bldRes, gwRes, evtRes] = await Promise.all([
+      const [tenantRes, bldRes, gwRes] = await Promise.all([
         db.from('tenants').select('id', { count: 'exact', head: true }),
         db.from('buildings').select('id, name, tenant_id', { count: 'exact' }).match(tenantFilter),
         db.from('gateways').select('*').match(tenantFilter),
-        db.from('events').select('*').order('received_at', { ascending: false }).limit(8),
       ]);
 
       const gateways = (gwRes.data ?? []) as Gateway[];
-      const events24 = ((await db
-        .from('events')
-        .select('id, received_at, acknowledged, acknowledged_at, severity, event_type, state')
-        .gte('received_at', new Date(Date.now() - 86400000).toISOString())
-        .match(tenantFilter)
-      ).data ?? []) as EventRow[];
-
       const buildingsData = (bldRes.data ?? []) as Building[];
       const buildingsFiltered = isPlatformAdmin ? buildingsData : buildingsData.filter((b) => b.tenant_id === profile?.tenant_id);
 
       setBuildings(buildingsFiltered);
-
-      const online = gateways.filter((g) => g.status === 'online').length;
-      const offline = gateways.filter((g) => g.status === 'offline').length;
-      const activeAlarms = events24.filter((e) => e.event_type === 'alarm' && e.state === 'active').length;
-      const commFailures = events24.filter((e) => e.event_type === 'comm_loss').length;
-
-      const acked = events24.filter((e) => e.acknowledged && e.acknowledged_at);
-      const ackTimes = acked.map((e) => {
-        const diff = new Date(e.acknowledged_at!).getTime() - new Date(e.received_at).getTime();
-        return Math.max(0, Math.floor(diff / 1000));
-      }).filter((t) => t > 0);
-      const avgAckSec = ackTimes.length > 0 ? Math.round(ackTimes.reduce((a, b) => a + b, 0) / ackTimes.length) : null;
-
-      setStats({
+      setStats((prev) => ({
         tenants: tenantRes.count ?? 0,
         buildings: buildingsFiltered.length,
         gateways: gateways.length,
-        online,
-        offline,
-        activeAlarms,
-        commFailures,
-        events24h: events24.length,
-        avgAckSec,
-      });
-
-      setRecentEvents((evtRes.data ?? []) as EventRow[]);
-
-      // events by day for last 7 days
-      const days: { date: string; count: number }[] = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(Date.now() - i * 86400000);
-        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
-        const dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).toISOString();
-        const count = events24.filter((e) => e.received_at >= dayStart && e.received_at < dayEnd).length;
-        days.push({ date: d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit' }), count });
-      }
-      setEventsByDay(days);
+        online: gateways.filter((g) => g.status === 'online').length,
+        offline: gateways.filter((g) => g.status === 'offline').length,
+        activeAlarms: prev?.activeAlarms ?? 0,
+        commFailures: prev?.commFailures ?? 0,
+        events24h: prev?.events24h ?? 0,
+        avgAckSec: prev?.avgAckSec ?? null,
+      }));
       setLoading(false);
     }
     load();
   }, [profile, isPlatformAdmin]);
+
+  // Estatisticas e lista de eventos recentes derivadas da MESMA fonte unificada.
+  const recentEvents = useMemo(() => unifiedEvents.slice(0, 8), [unifiedEvents]);
+
+  useEffect(() => {
+    const dayStart24 = new Date(Date.now() - 86400000).toISOString();
+    const events24 = unifiedEvents.filter((e) => (e.received_at ?? '') >= dayStart24);
+
+    const activeAlarms = events24.filter((e) => e.event_type === 'alarm' && e.state === 'active').length;
+    const commFailures = events24.filter((e) => e.event_type === 'comm_loss').length;
+
+    const acked = events24.filter((e) => e.acknowledged && e.acknowledged_at);
+    const ackTimes = acked.map((e) => {
+      const diff = new Date(e.acknowledged_at!).getTime() - new Date(e.received_at).getTime();
+      return Math.max(0, Math.floor(diff / 1000));
+    }).filter((t) => t > 0);
+    const avgAckSec = ackTimes.length > 0 ? Math.round(ackTimes.reduce((a, b) => a + b, 0) / ackTimes.length) : null;
+
+    setStats((prev) => prev ? { ...prev, activeAlarms, commFailures, events24h: events24.length, avgAckSec } : prev);
+
+    // events by day for last 7 days (usa o conjunto unificado completo)
+    const days: { date: string; count: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000);
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
+      const dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).toISOString();
+      const count = unifiedEvents.filter((e) => e.received_at >= dayStart && e.received_at < dayEnd).length;
+      days.push({ date: d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit' }), count });
+    }
+    setEventsByDay(days);
+  }, [unifiedEvents]);
 
   const maxDay = useMemo(() => Math.max(...eventsByDay.map((d) => d.count), 1), [eventsByDay]);
 
@@ -203,7 +203,15 @@ export function DashboardPage() {
           <h3 className="font-semibold text-slate-900">Eventos recentes</h3>
         </div>
         <div className="divide-y divide-slate-100">
-          {recentEvents.length === 0 && <div className="px-5 py-8 text-center text-sm text-slate-400">Nenhum evento recebido ainda.</div>}
+          {eventsError ? (
+            <div className="px-5 py-8 text-center text-sm text-red-500">
+              Erro ao carregar eventos: {eventsError}
+            </div>
+          ) : eventsLoading ? (
+            <div className="px-5 py-8 text-center text-sm text-slate-400">Carregando eventos...</div>
+          ) : recentEvents.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-slate-400">Nenhum evento recebido ainda.</div>
+          ) : null}
           {recentEvents.map((evt) => (
             <div key={evt.id} className="px-5 py-3.5 flex items-center gap-4 hover:bg-slate-50 transition-colors">
               <div className={`badge ${eventTypeColor(evt)}`}>

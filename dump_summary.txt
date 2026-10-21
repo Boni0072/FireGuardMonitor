@@ -1,0 +1,5 @@
+buildings: 3
+eventos: 13
+events: 0
+gateways: 0
+panels: 3

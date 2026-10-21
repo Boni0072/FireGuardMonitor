@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Tooltip, useMap, Circle } from 'react-leaflet';
 import { useAuth } from '@/context/AuthContext';
-import { db, Panel, Gateway, Building, EventRow, isDemoAccount, fetchAllEvents } from '@/lib/db';
+import { db, Panel, Gateway, Building, EventRow, isDemoAccount } from '@/lib/db';
+import { useUnifiedEvents } from '@/hooks/useUnifiedEvents';
 import { Modal } from '@/components/Modal';
 import {
   MapPin, RefreshCw, Flame, AlertTriangle, WifiOff, ShieldCheck,
@@ -344,6 +345,12 @@ export function MapPage() {
   const [statusFilter, setStatusFilter] = useState<BuildingStatus | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
 
+  // Fonte unica de eventos (colecoes `events` + `eventos` legado), a mesma
+  // usada pelo Dashboard, Monitor e Painel.
+  const { events: unifiedEvents, reload: reloadEvents } = useUnifiedEvents(500);
+  const unifiedEventsRef = useRef<EventRow[]>(unifiedEvents);
+  unifiedEventsRef.current = unifiedEvents;
+
   // Refs do auto-refresh: loadRef sempre aponta para a versao mais recente de
   // load; silentReloadRef marca recarga automatica (nao pisca "Atualizando...").
   const loadRef = useRef(load);
@@ -410,14 +417,12 @@ export function MapPage() {
     // podem ter tenant_id null). SEM janela de 24h e ordenado por received_at
     // desc — o status do mapa precisa derivar do MESMO conjunto do painel
     // (um alarme sem restauracao segue ativo la apos 24h; aqui tambem).
-    let allEvents = ((await fetchAllEvents(500)) as EventRow[])
-      .sort((a, b) => String(b.received_at ?? '').localeCompare(String(a.received_at ?? '')));
-    if (!isPlatformAdmin && profile?.tenant_id) {
-      allEvents = allEvents.filter((e) => {
-        const t = e.tenant_id as string | null;
-        return t == null || t === '' || t === profile.tenant_id;
-      });
-    }
+    // Mesma fonte de verdade do Dashboard/Monitor: eventos unificados
+    // (`events` + `eventos` legado), deduplicados por Contact ID e ordenados
+    // por received_at desc. SEM janela de 24h — o status do mapa precisa derivar
+    // do MESMO conjunto do painel (um alarme sem restauracao segue ativo la
+    // apos 24h; aqui tambem).
+    const allEvents = unifiedEventsRef.current;
 
     const built: BuildingBoard[] = buildings.map((building) => {
       const bPanels = panels.filter((p) => p.building_id === building.id);
@@ -522,7 +527,9 @@ export function MapPage() {
     }
   }
 
-  useEffect(() => { load(); }, [profile, isPlatformAdmin]);
+  // Recarrega quando o perfil/tenant muda OU quando o conjunto unificado de
+  // eventos muda (fonte unica compartilhada com Dashboard/Monitor/Painel).
+  useEffect(() => { void load(); }, [profile, isPlatformAdmin, unifiedEvents]);
 
   // Auto-refresh em silencio (mesma filosofia do polling do MonitorPage): o
   // mapa acompanha o painel sem exigir clique em "Atualizar" e sem piscar o
@@ -540,16 +547,20 @@ export function MapPage() {
     return () => window.clearInterval(id);
   }, [isDemo]);
 
-  // Realtime refresh when events change
+  // Realtime refresh when events change. Recarrega a fonte unificada de eventos
+  // (que dispara o efeito acima e redesenha o mapa) em vez de ler um possivel
+  // estado desatualizado.
   useEffect(() => {
     if (!profile) return;
     const channel = db
       .channel('map-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos' }, () => { load(); })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'eventos' }, () => { load(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos' }, () => { reloadEvents(); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'eventos' }, () => { reloadEvents(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'events' }, () => { reloadEvents(); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'events' }, () => { reloadEvents(); })
       .subscribe();
     return () => { db.removeChannel(channel); };
-  }, [profile]);
+  }, [profile, reloadEvents]);
 
   // Markers/points respect the status filter; counts always show the totals.
   const visibleBoards = useMemo(

@@ -1,11 +1,12 @@
 ﻿import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { db, Panel, Building, Gateway, EventRow, fetchAllEvents } from '@/lib/db';
-import { updateDoc, doc, deleteDoc } from 'firebase/firestore';
+import { db, Panel, Building, Gateway, EventRow } from '@/lib/db';
+import { useUnifiedEvents } from '@/hooks/useUnifiedEvents';
+import { updateDoc, doc, deleteDoc, type UpdateData, type DocumentData } from 'firebase/firestore';
 import { firestore } from '@/lib/firebase';
 import { PageHeader } from '@/components/PageHeader';
 import { Modal, ConfirmDialog } from '@/components/Modal';
-import { Plus, Search, CircuitBoard, Edit2, Trash2, Cpu, Wifi, ToggleRight, Activity } from 'lucide-react';
+import { Plus, Search, CircuitBoard, Edit2, Trash2, Cpu, Wifi, ToggleRight } from 'lucide-react';
 import { derivePanelConnectionStatus, PANEL_CONNECTION_META, PanelConnectionStatus } from '@/lib/eventHelpers';
 
 const MANUFACTURERS = ['Intelbras', 'Segurimax', 'Siemens', 'Bosch', 'NOTIFIER'];
@@ -52,7 +53,6 @@ export function PanelsPage() {
   const canCreate = true;
 
   const [panels, setPanels] = useState<Panel[]>([]);
-  const [events, setEvents] = useState<EventRow[]>([]);
   const [gateways, setGateways] = useState<Gateway[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [connStatus, setConnStatus] = useState<Record<string, PanelConnectionStatus>>({});
@@ -63,6 +63,9 @@ export function PanelsPage() {
   const [editing, setEditing] = useState<Panel | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Panel | null>(null);
   const [ipError, setIpError] = useState<string | null>(null);
+
+  // Fonte unica de eventos (colecoes `events` + `eventos` legado).
+  const { events: unifiedEvents, mergeEvent } = useUnifiedEvents(500);
 
   const [form, setForm] = useState({
     building_id: '', manufacturer: 'Intelbras', model: '', asset_code: '',
@@ -87,16 +90,7 @@ export function PanelsPage() {
     const gq = db.from('gateways').select('*');
     if (!isPlatformAdmin && profile?.tenant_id) gq.eq('tenant_id', profile.tenant_id);
     const { data: gData } = await gq;
-    const gateways = (gData ?? []) as Gateway[];
-    setGateways(gateways);
-
-    // Unifica `events` + `eventos` legados, ordenado por received_at desc.
-    const allEvents = filterEventsForTenant((await fetchAllEvents(500)) as EventRow[], profile?.tenant_id);
-    setEvents(allEvents);
-
-    const [statusMap, descricaoMap] = computeConnectionStatusMap(panelList, gateways, allEvents, profile?.tenant_id);
-    setConnStatus(statusMap);
-    setPanelDescricao(descricaoMap);
+    setGateways((gData ?? []) as Gateway[]);
 
     setLoading(false);
   }
@@ -115,13 +109,8 @@ export function PanelsPage() {
     const applyEvent = (newEvent: EventRow) => {
       if (!alive) return;
       if (!admin && myTenant && newEvent.tenant_id != null && newEvent.tenant_id !== '' && newEvent.tenant_id !== myTenant) return;
-      setEvents((prev) => {
-        const same = prev.some((e) => (e.external_event_id ?? '') === (newEvent.external_event_id ?? '') && e.received_at === newEvent.received_at);
-        if (same) return prev;
-        const next = [newEvent, ...prev];
-        next.sort((a, b) => String(b.received_at ?? '').localeCompare(String(a.received_at ?? '')));
-        return next.slice(0, 500);
-      });
+      // Atualiza a fonte unica compartilhada (dedupe por external_event_id).
+      mergeEvent(newEvent);
     };
 
     const channel = db
@@ -151,11 +140,11 @@ export function PanelsPage() {
   // central, sempre que eventos, paineis ou gateways forem atualizados.
   useEffect(() => {
     if (!profile) return;
-    const filtered = filterEventsForTenant(events, profile.tenant_id);
+    const filtered = filterEventsForTenant(unifiedEvents, profile.tenant_id);
     const [statusMap, descricaoMap] = computeConnectionStatusMap(panels, gateways, filtered, profile.tenant_id);
     setConnStatus(statusMap);
     setPanelDescricao(descricaoMap);
-  }, [events, panels, gateways, profile?.id, profile?.tenant_id, isPlatformAdmin]);
+  }, [unifiedEvents, panels, gateways, profile?.id, profile?.tenant_id, isPlatformAdmin]);
 
   function openCreate() {
     setEditing(null);
@@ -200,15 +189,19 @@ export function PanelsPage() {
     try {
       if (editing) {
         console.log('[PANELS] updating panel id:', editing.id);
-        await updateDoc(doc(firestore, 'panels', editing.id), payload as any);
+        await updateDoc(
+          doc(firestore, 'panels', editing.id),
+          payload as unknown as UpdateData<DocumentData>,
+        );
       } else {
         await db.from('panels').insert(payload);
       }
       setModalOpen(false);
       load();
-    } catch (err: any) {
+    } catch (err) {
       console.error('[PANELS] Erro ao salvar central:', err);
-      alert('Erro ao salvar central: ' + (err?.message ?? String(err)));
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('Erro ao salvar central: ' + msg);
     }
   }
 
@@ -218,9 +211,10 @@ export function PanelsPage() {
       await deleteDoc(doc(firestore, 'panels', p.id));
       setConfirmDelete(null);
       load();
-    } catch (err: any) {
+    } catch (err) {
       console.error('[PANELS] Erro ao excluir central:', err);
-      alert('Erro ao excluir central: ' + (err?.message ?? String(err)));
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('Erro ao excluir central: ' + msg);
     }
   }
 

@@ -4,6 +4,29 @@ import {
   onSnapshot, updateDoc,
 } from 'firebase/firestore';
 import { firestore } from '@/lib/firebase';
+import {
+  dedupeEventRows,
+  normalizeEventDoc,
+  normalizeLegacyEvento,
+  sortEventsNewestFirst,
+} from '@/lib/eventUtils';
+
+// A logica pura da fonte unificada de eventos vive em `@/lib/eventUtils`
+// (sem dependencias do Firebase), para ser testavel fora do app.
+// Reexportada aqui porque `db.ts` e o ponto de entrada historico do front.
+export {
+  EVENT_DEDUPE_WINDOW_MS,
+  dedupeEventRows,
+  eventDedupeKey,
+  eventTimestampMs,
+  isSameEventOccurrence,
+  linkEventToPanel,
+  mapLegacyEvent,
+  normalizeEventDoc,
+  normalizeLegacyEvento,
+  sortEventsNewestFirst,
+} from '@/lib/eventUtils';
+export type { EventRowLike, PanelLink } from '@/lib/eventUtils';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -197,149 +220,114 @@ export interface NotificationSubscription {
 
 // ---------------------------------------------------------------------------
 // Eventos: unifica `events` (nova) + `eventos` (legada do receptor antigo).
+//
+// A logica pura (decodificacao do Contact ID, normalizacao, deduplicacao e
+// ordenacao) vive em `@/lib/eventUtils`, sem dependencia do Firebase, para
+// poder ser testada isoladamente. Aqui fica apenas a camada Firestore.
 // ---------------------------------------------------------------------------
-
-/** Decodifica Contact ID 15/16 chars. */
-function decodeBruto(bruto: string): { codigo: string; conta: string; qualificador: string; particao: string; zona: string } | null {
-  const msg = (bruto ?? '').trim();
-  if (msg.length !== 15 && msg.length !== 16) return null;
-  if (msg.slice(4, 6) !== '18') return null;
-  if (!/^[0-9A-Fa-f]+$/.test(msg)) return null;
-  return {
-    conta: msg.slice(0, 4),
-    qualificador: msg[6],
-    codigo: msg.slice(7, 10),
-    particao: msg.slice(10, 12),
-    zona: msg.slice(12, 15),
-  };
-}
-
-const ALARM_CODES = new Set([
-  '110', '111', '112', '113', '114', '115', '116', '117', '118',
-  '120', '121', '122',
-  '130', '131', '132', '133', '134', '146', '150',
-]);
-
-/**
- * Mesma regra de cores do front-end (src/lib/contactIdRules.ts):
- *   - alarme (qualificador 1 em codigos de incendio/panico/zona) -> vermelho, pulsa
- *   - restauracao (qualificador 3) -> verde, estatico
- *   - falha de energia/bateria (301/302) -> ambar, pulsa suave
- *   - armado/desarmado (401) -> informativo, estatico
- *   - online (602) -> verde, estatico
- */
-function mapLegacyEvent(codigo: string, qualificador: string): { event_type: string; severity: string; state: string } {
-  const q = String(qualificador ?? '');
-  const cod = String(codigo ?? '');
-  if (ALARM_CODES.has(cod)) {
-    if (q === '3') return { event_type: 'alarm_restore', severity: 'normal', state: 'normal' };
-    return { event_type: 'alarm', severity: 'critical', state: 'active' };
-  }
-  if (cod === '301' || cod === '302' || cod === '309' || cod === '351' || cod === '380') {
-    if (q === '3') return { event_type: 'fault_restore', severity: 'normal', state: 'normal' };
-    return { event_type: 'fault', severity: 'warning', state: 'active' };
-  }
-  if (cod === '401' || cod === '402') return { event_type: 'supervisory', severity: 'info', state: 'normal' };
-  if (cod === '602') return { event_type: 'heartbeat', severity: 'info', state: 'normal' };
-  if (q === '3') return { event_type: 'fault_restore', severity: 'normal', state: 'normal' };
-  if (q === '6') return { event_type: 'heartbeat', severity: 'info', state: 'normal' };
-  return { event_type: 'supervisory', severity: 'info', state: 'normal' };
-}
 
 type Row = Record<string, any>;
 
 /**
- * Converte doc legado `eventos` -> EventRow (id prefixado com `leg-`).
- * O Contact ID (qualificador + codigo) e a fonte da verdade: o `event_type`
- * gravado no legado e apenas um palpite do receptor.
+ * ---------------------------------------------------------------------------
+ * Carregador unificado de eventos (`events` + `eventos` legado)
+ * ---------------------------------------------------------------------------
+ *
+ * Regras:
+ *   - Le as DUAS colecoes (`events` e `eventos`) e normaliza cada documento
+ *     para o mesmo formato EventRow.
+ *   - Deduplica pelo `external_event_id` (Contact ID). Em caso de conflito
+ *     entre as colecoes, o documento de `events` tem precedencia (schema mais
+ *     completo); o legado preenche apenas o que faltar.
+ *   - Ordena do mais recente para o mais antigo (received_at desc).
+ *   - Filtro de tenant: mantem eventos do tenant e eventos sem tenant
+ *     vinculado (centrais sem empresa cadastrada).
  */
-export function normalizeLegacyEvento(id: string, leg: Record<string, any>): Row {
-  const bruto = String(leg.bruto ?? '');
-  const dec = decodeBruto(bruto);
-  const codigo = String(leg.codigo ?? dec?.codigo ?? '');
-  const conta = String(leg.conta ?? dec?.conta ?? '');
-  // O `tipo` gravado pelo receptor ("evento" | "restauracao") e apenas um
-  // palpite: o Contact ID (qualificador + codigo) manda. So usamos `tipo`
-  // quando o qualificador nao veio nem no documento nem no bruto.
-  const tipo = String(leg.tipo ?? '').toLowerCase();
-  let qualificador = String(leg.qualificador ?? dec?.qualificador ?? '');
-  if (!qualificador && tipo === 'restauracao') qualificador = '3';
-  const particao = String(leg.particao ?? dec?.particao ?? '');
-  const zona = String(leg.zona ?? dec?.zona ?? '');
-  const mapped = mapLegacyEvent(codigo, qualificador);
-  let received = '';
-  const r = leg.recebido_em;
-  if (typeof r === 'string') received = r;
-  else {
+export async function fetchUnifiedEvents(
+  limitN = 500,
+  options: { tenantId?: string | null } = {},
+): Promise<EventRow[]> {
+  const { getDocs: gds, collection: col } = await import('firebase/firestore');
+  const { firestore: fs } = await import('@/lib/firebase');
+
+  const readCollection = async (name: string): Promise<{ id: string; data: Row }[]> => {
     try {
-      const p = toPlain(r) as unknown;
-      if (typeof p === 'string') received = p;
-    } catch { /* noop */ }
-  }
-  if (!received) received = new Date().toISOString();
-  let zonaNum: number | null = null;
-  const z = parseInt(zona, 10);
-  if (Number.isFinite(z)) zonaNum = z;
-  return {
-    id: `leg-${id}`,
-    tenant_id: (leg.tenant_id as string | null) ?? null,
-    gateway_id: (leg.gateway_id as string | null) ?? null,
-    building_id: (leg.building_id as string | null) ?? null,
-    panel_id: (leg.panel_id as string | null) ?? null,
-    input_id: null,
-    external_event_id: `contactid-${bruto}`,
-    sequence: null,
-    // O Contact ID (qualificador + codigo) e a fonte da verdade: o `event_type`
-    // gravado no documento e apenas um palpite do receptor e nao substitui a
-    // regra de cores derivada do par (qualificador, codigo).
-    event_type: mapped.event_type,
-    state: mapped.state,
-    input_ref: zona ? `Z${zona}` : null,
-    occurred_at: received,
-    received_at: received,
-    acknowledged: false,
-    acknowledged_by: null,
-    acknowledged_at: null,
-    severity: mapped.severity,
-    origem_ip: (leg.origem_ip as string | null) ?? null,
-    conta: conta || null,
-    codigo_contato: codigo || null,
-    qualificador: qualificador || null,
-    particao: particao || null,
-    zona: zona || null,
-    descricao: (leg.descricao as string | null) ?? null,
-    bruto,
-    input_number: zonaNum,
+      const snap = await gds(col(fs, name));
+      return snap.docs.map((d) => ({ id: d.id, data: (toPlain(d.data()) as Row) ?? {} }));
+    } catch {
+      return [];
+    }
   };
+
+  const [modernDocs, legacyDocs, panelDocs] = await Promise.all([
+    readCollection('events'),
+    readCollection('eventos'),
+    readCollection('panels'),
+  ]);
+
+  // Tenant/building herdados do painel (eventos legados podem nao ter o vinculo).
+  const panelInfo = new Map<string, { tenant_id: string | null; building_id: string | null }>();
+  for (const p of panelDocs) {
+    panelInfo.set(p.id, {
+      tenant_id: (p.data.tenant_id as string | null) ?? null,
+      building_id: (p.data.building_id as string | null) ?? null,
+    });
+  }
+
+  const rows: Row[] = [];
+
+  // 1) Colecao nova (`events`) — fonte primaria.
+  for (const d of modernDocs) {
+    try {
+      const row = normalizeEventDoc(d.id, d.data);
+      // Herda tenant/building do painel quando o documento nao os traz.
+      if (row.panel_id) {
+        const info = panelInfo.get(String(row.panel_id));
+        if (info) {
+          if (!row.tenant_id) row.tenant_id = info.tenant_id;
+          if (!row.building_id) row.building_id = info.building_id;
+        }
+      }
+      row.__source = 'events';
+      rows.push(row);
+    } catch { /* ignora documento invalido */ }
+  }
+
+  // 2) Colecao legada (`eventos`) — normalizada e com vinculo herdado do painel.
+  for (const d of legacyDocs) {
+    try {
+      const leg = normalizeLegacyEvento(d.id, d.data);
+      if (!leg.tenant_id && leg.panel_id) {
+        const info = panelInfo.get(String(leg.panel_id));
+        if (info) {
+          leg.tenant_id = info.tenant_id;
+          if (!leg.building_id) leg.building_id = info.building_id;
+        }
+      }
+      leg.__source = 'eventos';
+      rows.push(leg);
+    } catch { /* ignora documento invalido */ }
+  }
+
+  const deduped = dedupeEventRows(rows);
+
+  // 4) Mais recentes primeiro (empate resolvido pelo id, para ser deterministico).
+  sortEventsNewestFirst(deduped);
+
+  // 5) Filtro de tenant (eventos sem tenant vinculado continuam visiveis).
+  const tenantId = options.tenantId ?? null;
+  const scoped = tenantId
+    ? deduped.filter((e) => e.tenant_id == null || e.tenant_id === '' || e.tenant_id === tenantId)
+    : deduped;
+
+  return scoped.slice(0, limitN) as EventRow[];
 }
 
 /**
- * Busca a colecao `eventos` (fonte unica de verdade dos eventos do receptor).
- *
- * Os documentos sao normalizados para o formato EventRow e deduplicados pelo
- * Contact ID (`external_event_id`), mantendo sempre o documento mais recente
- * (mesmo `bruto` pode ter sido gravado mais de uma vez).
+ * Busca a colecao de eventos unificada (`events` + `eventos` legado).
  */
 export async function fetchAllEvents(limitN = 500): Promise<Row[]> {
-  const { getDocs: gds, collection: col } = await import('firebase/firestore');
-  const { firestore: fs } = await import('@/lib/firebase');
-  const snap = await gds(col(fs, 'eventos')).catch(() => ({ docs: [] as { id: string; data: () => Row }[] }));
-  const rows: Row[] = [];
-  for (const d of (snap as { docs: { id: string; data: () => Row }[] }).docs) {
-    try {
-      rows.push(normalizeLegacyEvento(d.id, (toPlain(d.data()) as Row) ?? {}));
-    } catch { /* ignora doc invalido */ }
-  }
-  // Mais recentes primeiro: assim a deduplicacao mantem a ultima versao do evento.
-  rows.sort((x, y) => String(y.received_at ?? '').localeCompare(String(x.received_at ?? '')));
-  const seen = new Set<string>();
-  const deduped = rows.filter((r) => {
-    const key = String(r.external_event_id ?? r.bruto ?? r.id);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  return deduped.slice(0, limitN);
+  return fetchUnifiedEvents(limitN);
 }
 
 /** Firestore Timestamps (and nested objects/arrays) → ISO strings. */
@@ -574,10 +562,10 @@ function makeChannel() {
         byTable.set(s.table, list);
       }
       const unsubs = [...byTable.entries()].map(([table, list]) => {
-        // A colecao de eventos (`eventos`) ja e carregada na inicializacao (`load`).
+        // A colecao de eventos (`eventos`/`events`) ja e carregada na inicializacao (`load`).
         // O `added` do PRIMEIRO snapshot nao deve disparar o callback (evita reloads
         // desnecessarios), mas os `added` seguintes (eventos novos) devem.
-        const isEventTable = table === 'eventos';
+        const isEventTable = table === 'eventos' || table === 'events';
         let firstSnapshot = true;
         return onSnapshot(
           collection(firestore, table),
@@ -596,10 +584,13 @@ function makeChannel() {
               if (skipAdded && kind === 'added') continue;
 
               const plain = { id: ch.doc.id, ...(toPlain(ch.doc.data()) as Row) };
-              // Normaliza docs da colecao `eventos` para o formato EventRow
+              // Normaliza docs das colecoes de evento para o formato EventRow
+              // (`eventos` legado -> Contact ID; `events` -> schema atual).
               const rows: Row[] = table === 'eventos'
                 ? (() => { try { return [normalizeLegacyEvento(ch.doc.id, plain)]; } catch { return []; } })()
-                : [plain];
+                : table === 'events'
+                  ? (() => { try { return [normalizeEventDoc(ch.doc.id, plain)]; } catch { return []; } })()
+                  : [plain];
               for (const row of rows) {
                 for (const s of list) {
                   const want = s.event;

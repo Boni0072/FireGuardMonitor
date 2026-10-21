@@ -138,6 +138,9 @@ export interface EventLike {
   qualificador?: string | null;
   codigo_contato?: string | null;
   codigo?: string | null;
+  zona?: string | null;
+  input_ref?: string | null;
+  descricao?: string | null;
 }
 
 /**
@@ -179,7 +182,22 @@ export function resolveEventTone(evt: EventLike): { tone: ContactIdTone; pulse: 
 
 /** Rotulo preferindo a regra de Contact ID e caindo para o rotulo do evento. */
 export function resolveEventLabel(evt: EventLike, fallback: string): string {
-  const rule = resolveContactIdRule(evt.qualificador ?? null, evt.codigo_contato ?? evt.codigo ?? null);
+  const qualificador = evt.qualificador ?? null;
+  const codigo = evt.codigo_contato ?? evt.codigo ?? null;
+
+  // Caso especifico: evento SPJ de falta de energia AC (codigo 301, qualificador 1)
+  // da zona Z005 deve exibir "Falta de energia AC".
+  // Outros eventos da zona Z005 (ex.: disparo de zona codigo 130) mantem sua
+  // classificacao normal pelo Contact ID.
+  const zona = String(evt.zona ?? '').trim();
+  const inputRef = String(evt.input_ref ?? '').trim().toUpperCase();
+  const isZ005 = zona === '005' || inputRef === 'Z005' || inputRef === 'Z5';
+  const isFaltaEnergiaAC = qualificador === '1' && codigo === '301';
+  if (isZ005 && isFaltaEnergiaAC) {
+    return 'Falta de energia AC';
+  }
+
+  const rule = resolveContactIdRule(qualificador, codigo);
   if (rule) return rule.label;
   return fallback;
 }
