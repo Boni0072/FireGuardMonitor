@@ -672,8 +672,8 @@ export function MonitorPage() {
                   const StatusIcon = statusConfig[board.status].icon;
                   // Rotulo do badge: descricao do evento que motiva o status
                   // (alarme ativo > falha ativa > ultimo evento); senao o rotulo padrao.
-                  const statusLabel = eventBadgeLabel(board.statusEvent?.descricao)
-                    || eventLabelFor(board.statusEvent ?? {}, cfg.tone === 'ok' ? 'OPERACIONAL' : statusConfig[board.status].label);
+                  const statusLabel = (eventLabelFor(board.statusEvent ?? {}, cfg.tone === 'ok' ? 'OPERACIONAL' : statusConfig[board.status].label)
+                    || eventBadgeLabel(board.statusEvent?.descricao)) ?? '';
                   // Foto exibida no card: avatar enviado no cadastro do edificio;
                   // as simulacoes mantem as imagens de demonstracao (imageUrl).
                   const thumbSrc = board.imageUrl ?? board.building?.avatar_url ?? null;
@@ -766,6 +766,7 @@ export function MonitorPage() {
                     const ev = board.statusEvent;
                     const tone = resolveEventTone(ev ?? {}).tone;
                     const label = eventLabelFor(ev ?? {}, 'ALARME DE INCÊNDIO').toUpperCase();
+                    const alarmLabel = eventLabelFor(ev ?? {}, 'ALARME DE INCÊNDIO');
                     return (
                     <div key={board.panel.id} className={`rounded-xl border p-3 ${tone === 'warning' ? 'border-amber-500/60 bg-amber-500/10 blink-attention' : 'border-red-500/60 bg-red-500/10 blink-critical'}`}>
                       <div className="flex items-center gap-2 mb-1.5">
@@ -781,8 +782,8 @@ export function MonitorPage() {
                       <div className="mt-1.5 space-y-0.5 text-[11px] text-slate-400">
                         <div className="truncate">Central: {board.panel.manufacturer} {board.panel.model}</div>
                         <div>Zona: {board.statusEvent?.input_ref || '—'}</div>
-                        {board.statusEvent?.descricao && (
-                          <div className="truncate" title={board.statusEvent.descricao}>{board.statusEvent.descricao}</div>
+                        {board.statusEvent && (
+                          <div className="truncate" title={alarmLabel}>{alarmLabel}</div>
                         )}
                         <div className="text-slate-500">{board.statusEvent ? formatDateTime(board.statusEvent.received_at) : '—'}</div>
                       </div>
